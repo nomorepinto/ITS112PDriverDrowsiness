@@ -1,6 +1,5 @@
 from scipy.spatial import distance as dist
 from imutils import face_utils
-from threading import Thread
 from picamera2 import Picamera2
 import numpy as np
 import imutils
@@ -42,6 +41,9 @@ EYE_AR_THRESH = 0.3
 EYE_AR_CONSEC_FRAMES = 30
 YAWN_THRESH = 20
 COUNTER = 0
+last_drowsy_time = 0
+last_yawn_time = 0
+COOLDOWN = 5  # seconds between messages
 
 print("-> Loading the predictor and detector...")
 detector = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
@@ -49,7 +51,16 @@ predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
 
 print("-> Starting PiCamera2 video stream...")
 picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration(main={"format": "BGR888"}))
+picam2_config = picam2.create_preview_configuration(main={"format": "BGR888"})
+picam2.configure(picam2_config)
+
+# Fix bluish tint: manually set white balance and exposure
+controls = {
+    "AwbMode": 1,              # Auto White Balance mode (1 = Auto)
+    "ExposureValue": 0.0,      # Neutral exposure compensation
+}
+picam2.set_controls(controls)
+
 picam2.start()
 time.sleep(2)
 
@@ -71,7 +82,7 @@ while True:
         ear, leftEye, rightEye = final_ear(shape)
         distance = lip_distance(shape)
 
-        # Draw eye and mouth contours
+        # Draw contours
         cv2.drawContours(frame, [cv2.convexHull(leftEye)], -1, (0, 255, 0), 1)
         cv2.drawContours(frame, [cv2.convexHull(rightEye)], -1, (0, 255, 0), 1)
         cv2.drawContours(frame, [shape[48:60]], -1, (0, 255, 0), 1)
@@ -80,7 +91,10 @@ while True:
         if ear < EYE_AR_THRESH:
             COUNTER += 1
             if COUNTER >= EYE_AR_CONSEC_FRAMES:
-                print("⚠️ Driver is drowsy!")
+                now = time.time()
+                if now - last_drowsy_time > COOLDOWN:
+                    print("⚠️ Driver is drowsy!")
+                    last_drowsy_time = now
                 cv2.putText(frame, "DROWSINESS ALERT!", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
@@ -88,7 +102,10 @@ while True:
 
         # Yawn detection
         if distance > YAWN_THRESH:
-            print("😮 Driver is yawning!")
+            now = time.time()
+            if now - last_yawn_time > COOLDOWN:
+                print("😮 Driver is yawning!")
+                last_yawn_time = now
             cv2.putText(frame, "Yawn Alert", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
