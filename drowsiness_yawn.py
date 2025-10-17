@@ -6,12 +6,11 @@ import time
 import numpy as np
 import os
 from threading import Thread
-from gpiozero import Servo
+from gpiozero import OutputDevice
 from time import sleep
 
-# === Initialize servo on GPIO 14 ===
-servo = Servo(14)
-servo.detach()  # keep servo idle initially
+# === Initialize relay on GPIO 14 ===
+relay = OutputDevice(14, active_high=True, initial_value=False)
 
 # === Initialize camera ===
 picam2 = Picamera2()
@@ -26,12 +25,13 @@ predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 EYE_AR_THRESH = 0.25
 EYE_AR_CONSEC_FRAMES = 15
 YAWN_THRESH = 20
-EMERGENCY_DELAY = 5  # seconds of continuous drowsiness
+EMERGENCY_DELAY = 2  # seconds of continuous drowsiness (changed from 5 to 2)
 
 COUNTER = 0
 last_yawn_time = 0
 alarm_on = False
 emergency_active = False
+emergency_start_time = None
 drowsy_start_time = None
 
 def eye_aspect_ratio(eye):
@@ -58,25 +58,21 @@ def start_drowsy_alarm():
     global alarm_on
     if not alarm_on:
         alarm_on = True
-        Thread(target=play_sound, args=("drowsy.wav", True), daemon=True).start()
+        Thread(target=play_sound, args=("sound.wav", True), daemon=True).start()
 
 def stop_drowsy_alarm():
     global alarm_on
     alarm_on = False
 
 def trigger_emergency():
-    global emergency_active
+    global emergency_active, emergency_start_time
     if not emergency_active:
         emergency_active = True
-        print("🚨 EMERGENCY MODE ACTIVATED! Triggering servo...")
-        servo.value = 1.0   # move to max position
-        os.system("aplay -q emergency.wav")  # optional third sound
-        sleep(1)
-        servo.mid()         # move back to center
-        sleep(0.5)
-        servo.detach()
-        print("Servo pulse complete.")
-        emergency_active = False
+        emergency_start_time = time.time()
+        print("🚨 EMERGENCY MODE ACTIVATED! Triggering relay...")
+        relay.on()  # activate relay
+        os.system("aplay -q sound.wav")  # play emergency sound
+        print("Emergency relay activated.")
 
 while True:
     frame = picam2.capture_array()
@@ -103,21 +99,36 @@ while True:
                 drowsy_start_time = time.time()
             COUNTER += 1
             if COUNTER >= EYE_AR_CONSEC_FRAMES:
+                cv2.putText(frame, "⚠️ DROWSY!", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                 print("⚠️ Driver is drowsy!")
                 start_drowsy_alarm()
 
                 # Check for emergency condition
-                if time.time() - drowsy_start_time > EMERGENCY_DELAY:
+                if time.time() - drowsy_start_time > EMERGENCY_DELAY and not emergency_active:
                     trigger_emergency()
         else:
             COUNTER = 0
             stop_drowsy_alarm()
             drowsy_start_time = None
 
+        # === Emergency Mode Display & Auto-Deactivate ===
+        if emergency_active:
+            cv2.putText(frame, "🚨 EMERGENCY!", (10, 70),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # Check if 3 seconds have passed since emergency started
+            if time.time() - emergency_start_time > 3:
+                relay.off()
+                emergency_active = False
+                emergency_start_time = None
+                print("Emergency deactivated after 3 seconds.")
+
         # === Yawn Detection ===
         if lip_dist > YAWN_THRESH and (time.time() - last_yawn_time > 5):
+            cv2.putText(frame, "😮 YAWNING!", (10, 110),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             print("😮 Driver is yawning!")
-            Thread(target=play_sound, args=("yawn.wav",), daemon=True).start()
+            Thread(target=play_sound, args=("sound.wav",), daemon=True).start()
             last_yawn_time = time.time()
 
         # Display data
@@ -133,4 +144,5 @@ while True:
 stop_drowsy_alarm()
 cv2.destroyAllWindows()
 picam2.stop()
-servo.detach()
+relay.off()  # ensure relay is off when program ends
+relay.close()
