@@ -10,7 +10,10 @@ from gpiozero import OutputDevice
 from time import sleep
 
 # === Initialize relay on GPIO 14 ===
-relay = OutputDevice(14, active_high=True, initial_value=False)
+# Note: If your relay is active-low, change active_high to False
+relay = OutputDevice(14, active_high=False, initial_value=False)
+print(f"Relay initialized. State: {relay.value}")
+print("Relay should be OFF now. If it's ON, there may be a hardware issue.")
 
 # === Initialize camera ===
 picam2 = Picamera2()
@@ -58,7 +61,7 @@ def start_drowsy_alarm():
     global alarm_on
     if not alarm_on:
         alarm_on = True
-        Thread(target=play_sound, args=("sound.wav", True), daemon=True).start()
+        Thread(target=play_sound, args=("drowsy.wav", True), daemon=True).start()
 
 def stop_drowsy_alarm():
     global alarm_on
@@ -70,13 +73,24 @@ def trigger_emergency():
         emergency_active = True
         emergency_start_time = time.time()
         print("🚨 EMERGENCY MODE ACTIVATED! Triggering relay...")
+        print(f"Relay state before ON: {relay.value}")
         relay.on()  # activate relay
-        os.system("aplay -q sound.wav")  # play emergency sound
+        print(f"Relay state after ON: {relay.value}")
+        os.system("aplay -q emergency.wav")  # play emergency sound
         print("Emergency relay activated.")
 
 while True:
     frame = picam2.capture_array()
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # === Emergency Mode Auto-Deactivate (check every frame) ===
+    if emergency_active and time.time() - emergency_start_time > 3:
+        print(f"Relay state before OFF: {relay.value}")
+        relay.off()
+        print(f"Relay state after OFF: {relay.value}")
+        emergency_active = False
+        emergency_start_time = None
+        print("Emergency deactivated after 3 seconds.")
 
     faces = detector(gray, 0)
     for face in faces:
@@ -112,23 +126,17 @@ while True:
             stop_drowsy_alarm()
             drowsy_start_time = None
 
-        # === Emergency Mode Display & Auto-Deactivate ===
+        # === Emergency Mode Display ===
         if emergency_active:
             cv2.putText(frame, "🚨 EMERGENCY!", (10, 70),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            # Check if 3 seconds have passed since emergency started
-            if time.time() - emergency_start_time > 3:
-                relay.off()
-                emergency_active = False
-                emergency_start_time = None
-                print("Emergency deactivated after 3 seconds.")
 
         # === Yawn Detection ===
         if lip_dist > YAWN_THRESH and (time.time() - last_yawn_time > 5):
             cv2.putText(frame, "😮 YAWNING!", (10, 110),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             print("😮 Driver is yawning!")
-            Thread(target=play_sound, args=("sound.wav",), daemon=True).start()
+            Thread(target=play_sound, args=("yawn.wav",), daemon=True).start()
             last_yawn_time = time.time()
 
         # Display data
